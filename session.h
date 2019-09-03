@@ -3,9 +3,14 @@
 
 #include <nghttp2/nghttp2.h>
 
+struct rxpc_stream;
+
 struct rxpc_session {
     nghttp2_session *session;
     void *transport_data;
+
+    struct rxpc_stream *stream_root;
+    struct rxpc_stream *stream_reply;
 };
 
 void rxpc_session_init(struct rxpc_session *s);

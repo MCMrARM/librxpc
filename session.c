@@ -1,23 +1,29 @@
 #include "session.h"
 
 #include <stdio.h>
+#include "stream.h"
 
-static void _rxpc2_session_send_settings(struct rxpc_session *s);
+static void _rxpc_session_send_settings(struct rxpc_session *s);
+static void _rxpc_session_root_stream_opened(struct rxpc_stream *stream);
 
 void rxpc_session_init(struct rxpc_session *s) {
     s->session = NULL;
+    s->stream_root = NULL;
+    s->stream_reply = NULL;
 }
 
 void rxpc_session_open(struct rxpc_session *s, nghttp2_session_callbacks *cb, void *transport_data) {
+    struct rxpc_stream_callbacks cbs = {0};
     nghttp2_option *opt;
     s->transport_data = transport_data;
     nghttp2_option_new(&opt);
     nghttp2_option_set_no_http_messaging(opt, 1);
     nghttp2_session_client_new2(&s->session, cb, s, opt);
     nghttp2_option_del(opt);
-    _rxpc2_session_send_settings(s);
+    _rxpc_session_send_settings(s);
 
-    // TODO: Open root channel
+    cbs.opened = _rxpc_session_root_stream_opened;
+    s->stream_root = rxpc_stream_open(s, &cbs);
 }
 
 void rxpc_session_terminate(struct rxpc_session *s) {
@@ -33,7 +39,7 @@ int rxpc_session_send_pending(struct rxpc_session *s) {
     return 0;
 }
 
-static void _rxpc2_session_send_settings(struct rxpc_session *s) {
+static void _rxpc_session_send_settings(struct rxpc_session *s) {
     int rv;
     nghttp2_settings_entry iv[1] = {
             {NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100}
@@ -44,12 +50,23 @@ static void _rxpc2_session_send_settings(struct rxpc_session *s) {
         fprintf(stderr, "xrpc: could not submit settings: %s", nghttp2_strerror(rv));
 }
 
+static void _rxpc_session_root_stream_opened(struct rxpc_stream *stream) {
+    struct rxpc_stream_callbacks cbs = {0};
+
+    // TODO: Send Hello
+
+    stream->session->stream_reply = rxpc_stream_open(stream->session, &cbs);
+    rxpc_session_send_pending(stream->session);
+}
 
 static int _rxpc_session_cb_frame_recv(nghttp2_session *session, const nghttp2_frame *frame, void *user_data) {
-    // struct rxpc_session_data *session_data = (struct rxpc_session_data *) user_data;
+    struct rxpc_stream *stream = (struct rxpc_stream *)
+            nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
     switch (frame->hd.type) {
         case NGHTTP2_HEADERS:
             fprintf(stderr, "rxpc: headers received\n");
+            if (stream->cbs.opened)
+                stream->cbs.opened(stream);
             break;
     }
     return 0;
