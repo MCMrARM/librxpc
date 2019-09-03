@@ -1,8 +1,11 @@
 #include "session.h"
 
 #include <stdio.h>
+#include <string.h>
+#include <sys/param.h>
+#include <inttypes.h>
+#include <assert.h>
 #include "stream.h"
-#include "proto.h"
 
 static void _rxpc_session_send_settings(struct rxpc_session *s);
 static void _rxpc_session_root_stream_opened(struct rxpc_stream *stream);
@@ -85,12 +88,72 @@ static int _rxpc_session_cb_frame_recv(nghttp2_session *session, const nghttp2_f
 
 static int _rxpc_session_cb_data_chunk_recv(nghttp2_session *session, uint8_t flags, int32_t stream_id,
         const uint8_t *data, size_t len, void *user_data) {
+    size_t tlen;
+    struct rxpc_stream *stream = (struct rxpc_stream *)
+            nghttp2_session_get_stream_user_data(session, stream_id);
+    struct rxpc_msg_header *header = (struct rxpc_msg_header *) stream->recv_header_data;
 #ifdef DEBUG_RAW_IO
     printf("rxpc: stream %d: received data chunk\n", stream_id);
     for (int i = 0; i < len; i++)
         printf("%02x ", data[i]);
     printf("\n");
 #endif
+    while (len > 0) {
+        // Read the header if needed
+        if (stream->recv_header_pos < sizeof(struct rxpc_msg_header)) {
+            if (stream->recv_header_pos == 0 && len >= sizeof(struct rxpc_msg_header)) { // 99% of cases
+                *((struct rxpc_msg_header *) stream->recv_header_data) = *((struct rxpc_msg_header *) data);
+                data += sizeof(struct rxpc_msg_header);
+                len -= sizeof(struct rxpc_msg_header);
+            } else {
+                tlen = MIN(sizeof(struct rxpc_msg_header) - stream->recv_header_pos, len);
+                memcpy(&stream->recv_header_data[stream->recv_header_pos], data, tlen);
+                stream->recv_header_pos += tlen;
+                data += tlen;
+                len -= tlen;
+                if (stream->recv_header_pos < sizeof(struct rxpc_msg_header))
+                    break; // Incomplete, not enough data to fill the remaining space
+            }
+
+            // Validate the header
+            if (header->magic != RXPC_MSG_MAGIC) {
+                fprintf(stderr, "rxpc: recv bad magic %" PRIx32, header->magic);
+                return -1;
+            }
+            if (header->length > 0x10000) {
+                fprintf(stderr, "rxpc: recv message too long: %" PRIu64 "\n", header->length);
+                return -1;
+            }
+        }
+
+        // Read the data
+        if (stream->recv_data_pos == 0 && len >= header->length) {
+            // No need to copy the data, it's all in the buffer
+            assert(stream->recv_data == NULL);
+            stream->cbs.message(stream, header, data);
+            data += header->length;
+            len -= header->length;
+        } else if (len > 0) {
+            if (!stream->recv_data)
+                stream->recv_data = malloc(header->length);
+            tlen = MIN(len, header->length - stream->recv_data_pos);
+            memcpy(&stream->recv_data[stream->recv_data_pos], header, tlen);
+            stream->recv_data_pos += tlen;
+            data += tlen;
+            len -= tlen;
+
+            if (stream->recv_data_pos != header->length)
+                break; // Incomplete
+
+            stream->cbs.message(stream, header, stream->recv_data);
+        }
+
+        // Message complete, prepare for next message
+        stream->recv_header_pos = 0;
+        if (stream->recv_data)
+            free(stream->recv_data);
+        stream->recv_data_pos = 0;
+    }
     return 0;
 }
 

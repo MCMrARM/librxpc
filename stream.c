@@ -3,7 +3,6 @@
 #include <malloc.h>
 #include <string.h>
 #include "session.h"
-#include "proto.h"
 #include <xpc/xpc_serialization.h>
 
 static ssize_t _rxpc_stream_read(nghttp2_session *session, int32_t stream_id, uint8_t *buf, size_t length,
@@ -18,6 +17,9 @@ struct rxpc_stream *rxpc_stream_open(struct rxpc_session *session, struct rxpc_s
     ret->send_data_end = NULL;
     provider.source.ptr = ret;
     provider.read_callback = _rxpc_stream_read;
+    ret->recv_header_pos = 0;
+    ret->recv_data_pos = 0;
+    ret->recv_data = NULL;
     ret->id = nghttp2_submit_request(session->session, NULL, NULL, 0, &provider, ret);
     if (ret->id <= 0) {
         fprintf(stderr, "rxpc: failed to open new stream: %s\n", nghttp2_strerror(ret->id));
