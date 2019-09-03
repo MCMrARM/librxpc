@@ -2,9 +2,11 @@
 
 #include <stdio.h>
 #include "stream.h"
+#include "proto.h"
 
 static void _rxpc_session_send_settings(struct rxpc_session *s);
 static void _rxpc_session_root_stream_opened(struct rxpc_stream *stream);
+static void _rxpc_session_reply_stream_opened(struct rxpc_stream *stream);
 
 void rxpc_session_init(struct rxpc_session *s) {
     s->session = NULL;
@@ -52,11 +54,20 @@ static void _rxpc_session_send_settings(struct rxpc_session *s) {
 
 static void _rxpc_session_root_stream_opened(struct rxpc_stream *stream) {
     struct rxpc_stream_callbacks cbs = {0};
+    xpc_object_t dict;
 
-    // TODO: Send Hello
+    dict = xpc_dictionary_create(NULL, NULL, 0);
+    // optional: xpc_dictionary_set_int64("ServiceVersion", value);
+    rxpc_stream_send(stream, RXPC_TYPE_HELLO, 0, 0, dict);
+    xpc_free(dict);
 
+    cbs.opened = _rxpc_session_reply_stream_opened;
     stream->session->stream_reply = rxpc_stream_open(stream->session, &cbs);
     rxpc_session_send_pending(stream->session);
+}
+
+static void _rxpc_session_reply_stream_opened(struct rxpc_stream *stream) {
+    rxpc_stream_send(stream, RXPC_TYPE_HELLO, RXPC_FLAG_REPLY_CHANNEL, 0, NULL);
 }
 
 static int _rxpc_session_cb_frame_recv(nghttp2_session *session, const nghttp2_frame *frame, void *user_data) {
@@ -74,7 +85,12 @@ static int _rxpc_session_cb_frame_recv(nghttp2_session *session, const nghttp2_f
 
 static int _rxpc_session_cb_data_chunk_recv(nghttp2_session *session, uint8_t flags, int32_t stream_id,
         const uint8_t *data, size_t len, void *user_data) {
-    fprintf(stderr, "rxpc: stream %d: received data chunk\n", stream_id);
+#ifdef DEBUG_RAW_IO
+    printf("rxpc: stream %d: received data chunk\n", stream_id);
+    for (int i = 0; i < len; i++)
+        printf("%02x ", data[i]);
+    printf("\n");
+#endif
     return 0;
 }
 
